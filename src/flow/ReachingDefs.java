@@ -1,7 +1,10 @@
 package flow;
 
 // some useful things to import. add any additional imports you need.
+import java.util.*;
 import joeq.Compiler.Quad.*;
+import joeq.Compiler.Quad.Operand.RegisterOperand;
+
 
 /**
  * Skeleton class for implementing a reaching definition analysis
@@ -9,20 +12,25 @@ import joeq.Compiler.Quad.*;
  */
 public class ReachingDefs implements Flow.Analysis {
 
-    /**
-     * Class for the dataflow objects in the ReachingDefs analysis.
-     * You are free to change this class or move it to another file.
-     */
-    public class MyDataflowObject implements Flow.DataflowObject {
-        /**
-         * Methods from the Flow.DataflowObject interface.
-         * See Flow.java for the meaning of these methods.
-         * These need to be filled in.
-         */
-        public void setToTop() {}
-        public void setToBottom() {}
-        public void meetWith (Flow.DataflowObject o) {}
-        public void copy (Flow.DataflowObject o) {}
+    private Map<Integer, String> definitions;
+    public class DefSet implements Flow.DataflowObject {
+        private Set<Integer> set;
+        public DefSet() { set = new TreeSet<Integer>(); }
+
+        public void setToTop() { set = new TreeSet<Integer>(); }
+        public void setToBottom() { set = definitions.keySet(); }
+
+        public void meetWith (Flow.DataflowObject o)
+        {
+            DefSet a = (DefSet) o;
+            set.addAll(a.set);
+        }
+
+        public void copy (Flow.DataflowObject o)
+        {
+            DefSet a = (DefSet) o;
+            set = new TreeSet<Integer>(a.set);
+        }
 
         /**
          * toString() method for the dataflow objects which is used
@@ -34,7 +42,38 @@ public class ReachingDefs implements Flow.Analysis {
          * your reaching definitions analysis must match this exactly.
          */
         @Override
-        public String toString() { return ""; }
+        public String toString()
+        {
+            return set.toString();
+        }
+
+        @Override
+        public boolean equals(Object o)
+        {
+            if (o instanceof DefSet)
+            {
+                DefSet a = (DefSet) o;
+                return set.equals(a.set);
+            }
+            return false;
+        }
+
+        @Override
+        public int hashCode() {
+            return set.hashCode();
+        }
+
+        private void add(int i) { set.add(i); }
+
+        private void kill(String id) {
+            Set<Integer> killedDef = new HashSet<Integer>();
+            for (int i: set) {
+                if (definitions.get(i).equals(id)) {
+                    killedDef.add(i);
+                }
+            }
+            set.removeAll(killedDef);
+        }
     }
 
     /**
@@ -45,8 +84,8 @@ public class ReachingDefs implements Flow.Analysis {
      * You are free to modify these fields, just make sure to
      * preserve the data printed by postprocess(), which relies on these.
      */
-    private MyDataflowObject[] in, out;
-    private MyDataflowObject entry, exit;
+    private DefSet[] in, out;
+    private DefSet entry, exit;
 
     /**
      * This method initializes the datflow framework.
@@ -68,24 +107,30 @@ public class ReachingDefs implements Flow.Analysis {
         max += 1;
 
         // allocate the in and out arrays.
-        in = new MyDataflowObject[max];
-        out = new MyDataflowObject[max];
+        in = new DefSet[max];
+        out = new DefSet[max];
 
-        // initialize the contents of in and out.
+        // initialize the contents of  in and out.
         qit = new QuadIterator(cfg);
         while (qit.hasNext()) {
             int id = qit.next().getID();
-            in[id] = new MyDataflowObject();
-            out[id] = new MyDataflowObject();
+            in[id] = new DefSet();
+            out[id] = new DefSet();
         }
 
         // initialize the entry and exit points.
-        entry = new MyDataflowObject();
-        exit = new MyDataflowObject();
+        entry = new DefSet();
+        exit = new DefSet();
+        transferfn.val = new DefSet();
 
-        /************************************************
-         * Your remaining initialization code goes here *
-         ************************************************/
+        definitions = new TreeMap<Integer, String>();
+        QuadIterator it = new QuadIterator(cfg);
+        while (it.hasNext()) {
+            Quad quad = it.next();
+            if (quad.getDefinedRegisters().size() > 0) {
+                definitions.put(quad.getID(), quad.getDefinedRegisters().get(0).getRegister().toString());
+            }
+        }
     }
 
     /**
@@ -108,20 +153,66 @@ public class ReachingDefs implements Flow.Analysis {
         System.out.println("exit: " + exit.toString());
     }
 
-    /**
-     * Other methods from the Flow.Analysis interface.
-     * See Flow.java for the meaning of these methods.
-     * These need to be filled in.
-     */
-    public boolean isForward () { return false; }
-    public Flow.DataflowObject getEntry() { return null; }
-    public Flow.DataflowObject getExit() { return null; }
-    public void setEntry(Flow.DataflowObject value) {}
-    public void setExit(Flow.DataflowObject value) {}
-    public Flow.DataflowObject getIn(Quad q) { return null; }
-    public Flow.DataflowObject getOut(Quad q) { return null; }
-    public void setIn(Quad q, Flow.DataflowObject value) {}
-    public void setOut(Quad q, Flow.DataflowObject value) {}
-    public Flow.DataflowObject newTempVar() { return null; }
-    public void processQuad(Quad q) {}
+    /* Is this a forward dataflow analysis? */
+    public boolean isForward () { return true; }
+
+    /* Routines for interacting with dataflow values. */
+
+    public Flow.DataflowObject getEntry() {
+        Flow.DataflowObject result = newTempVar();
+        result.copy(entry);
+        return result;
+    }
+    public Flow.DataflowObject getExit() {
+        Flow.DataflowObject result = newTempVar();
+        result.copy(exit);
+        return result;
+    }
+    public void setEntry(Flow.DataflowObject value)
+    {
+        entry.copy(value);
+    }
+    public void setExit(Flow.DataflowObject value) {
+        exit.copy(value);
+    }
+    public Flow.DataflowObject getIn(Quad q)
+    {
+        Flow.DataflowObject result = newTempVar();
+        result.copy(in[q.getID()]);
+        return result;
+    }
+    public Flow.DataflowObject getOut(Quad q)
+    {
+        Flow.DataflowObject result = newTempVar();
+        result.copy(out[q.getID()]);
+        return result;
+    }
+    public void setIn(Quad q, Flow.DataflowObject value)
+    {
+        in[q.getID()].copy(value);
+    }
+    public void setOut(Quad q, Flow.DataflowObject value)
+    {
+        out[q.getID()].copy(value);
+    }
+
+    public Flow.DataflowObject newTempVar() { return new DefSet(); }
+
+    private TransferFunction transferfn = new TransferFunction();
+    public void processQuad(Quad q) {
+        transferfn.val = (DefSet) getIn(q);
+        transferfn.visitQuad(q);
+        setOut(q, transferfn.val);
+    }
+
+    public static class TransferFunction extends QuadVisitor.EmptyVisitor {
+        DefSet val;
+        @Override
+        public void visitQuad(Quad q) {
+            for (RegisterOperand r: q.getDefinedRegisters()) {
+                val.kill(r.getRegister().toString());
+            }
+            if (q.getDefinedRegisters().size() > 0) { val.add(q.getID()); }
+        }
+    }
 }
